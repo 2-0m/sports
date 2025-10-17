@@ -7,10 +7,12 @@ HTML_PLAYER = """
 <html lang="ar">
 <head>
     <meta charset="UTF-8">
-    <title>🎬 مشغل البث المباشر</title>
+    <title>🎬 مشغل بث مباشر متعدد السيرفرات</title>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/plyr@3.7.8/dist/plyr.css">
+    <link href="https://vjs.zencdn.net/7.21.1/video-js.css" rel="stylesheet" />
     <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
     <script src="https://cdn.jsdelivr.net/npm/plyr@3.7.8/dist/plyr.polyfilled.js"></script>
+    <script src="https://vjs.zencdn.net/7.21.1/video.min.js"></script>
     <style>
         body {
             background-color: #000;
@@ -59,58 +61,100 @@ HTML_PLAYER = """
 </head>
 <body>
 
-    <h2>🎬 مشغل بث مباشر</h2>
+    <h2>🎬 مشغل بث مباشر متعدد السيرفرات</h2>
 
     <div class="server-list">
         {% for s in servers %}
-        <button class="server-btn {% if s == current_server %}active{% endif %}" onclick="switchServer('{{ s }}')">
+        <button class="server-btn {% if s == current_server %}active{% endif %}" onclick="switchServer('{{ s }}', this)">
             {{ s }}
         </button>
         {% endfor %}
     </div>
 
     <div id="player-container">
-        <video id="video" controls autoplay playsinline></video>
+        <div id="player-area"></div>
     </div>
 
     <script>
-        const video = document.getElementById('video');
-        const player = new Plyr(video);
-        const url = "{{ stream_url or '' }}";
-        const servers = {{ servers|tojson }};
-        let currentServer = "{{ current_server }}";
+        const servers = {{ servers_json | safe }};
+        const streamLink = "{{ stream_url or '' }}";
+        let currentPlayer = null;
+        let hls = null;
 
-        function playStream(server, link) {
-            const serverUrl = server + link;
+        // وظيفة إنشاء المشغل حسب نوع السيرفر
+        function loadPlayer(serverName) {
+            const base = servers[serverName].base || "";
+            const type = servers[serverName].type;
+            const fullUrl = base ? base + streamLink : streamLink;
+            const container = document.getElementById("player-area");
+            container.innerHTML = ""; // تنظيف المنطقة
 
-            if (Hls.isSupported()) {
-                const hls = new Hls();
-                hls.loadSource(serverUrl);
-                hls.attachMedia(video);
-                hls.on(Hls.Events.MANIFEST_PARSED, function() {
+            if (!streamLink) {
+                container.innerHTML = "<p style='color:red'>⚠️ لم يتم تمرير رابط البث.</p>";
+                return;
+            }
+
+            // إزالة أي مشغل سابق
+            if (hls) { hls.destroy(); hls = null; }
+            if (currentPlayer && currentPlayer.destroy) { currentPlayer.destroy(); }
+
+            if (type === "plyr") {
+                const video = document.createElement("video");
+                video.id = "plyr-player";
+                video.setAttribute("controls", "");
+                video.setAttribute("autoplay", "");
+                container.appendChild(video);
+
+                const player = new Plyr(video);
+                currentPlayer = player;
+
+                if (Hls.isSupported()) {
+                    hls = new Hls();
+                    hls.loadSource(fullUrl);
+                    hls.attachMedia(video);
+                    hls.on(Hls.Events.MANIFEST_PARSED, () => video.play());
+                } else {
+                    video.src = fullUrl;
                     video.play();
+                }
+
+            } else if (type === "videojs") {
+                const video = document.createElement("video");
+                video.id = "videojs-player";
+                video.className = "video-js vjs-default-skin";
+                video.setAttribute("controls", "");
+                video.setAttribute("autoplay", "");
+                video.setAttribute("preload", "auto");
+                video.innerHTML = `<source src="${fullUrl}" type="application/x-mpegURL">`;
+                container.appendChild(video);
+
+                currentPlayer = videojs(video, {
+                    fluid: true,
+                    autoplay: true,
+                    controls: true
                 });
-            } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-                video.src = serverUrl;
-                video.addEventListener('loadedmetadata', function() {
-                    video.play();
-                });
-            } else {
-                alert('❌ المتصفح لا يدعم تشغيل هذا النوع من البث.');
+
+            } else if (type === "native") {
+                const video = document.createElement("video");
+                video.id = "native-player";
+                video.setAttribute("controls", "");
+                video.setAttribute("autoplay", "");
+                video.src = fullUrl;
+                container.appendChild(video);
+                video.play();
             }
         }
 
-        function switchServer(server) {
-            const params = new URLSearchParams(window.location.search);
-            const link = params.get('url');
-            if (link) {
-                window.location.href = `/player?url=${encodeURIComponent(link)}&server=${encodeURIComponent(server)}`;
-            }
+        function switchServer(serverName, btn) {
+            document.querySelectorAll('.server-btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            loadPlayer(serverName);
         }
 
-        if (url && currentServer) {
-            playStream(currentServer, url);
-        }
+        // التشغيل الافتراضي
+        window.onload = () => {
+            loadPlayer("{{ current_server }}");
+        };
     </script>
 </body>
 </html>
@@ -125,19 +169,20 @@ def player():
     stream_url = request.args.get('url')
     current_server = request.args.get('server', 'Server 1')
 
-    # قائمة السيرفرات (يمكنك تعديلها)
+    # كل سيرفر له مشغل خاص
     servers = {
-        "Server 1": "",
-        "Server 2": "https://proxy1.example.com/?url=",
-        "Server 3": "https://proxy2.example.com/?url=",
+        "Server 1": {"type": "plyr", "base": ""},
+        "Server 2": {"type": "videojs", "base": ""},
+        "Server 3": {"type": "native", "base": ""},
     }
 
     return render_template_string(
         HTML_PLAYER,
         stream_url=stream_url,
         servers=list(servers.keys()),
+        servers_json=servers,
         current_server=current_server
     )
 
-if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5000)
+if __name__ == "__main__":
+    app.run(debug=True, host="0.0.0.0", port=5000)
