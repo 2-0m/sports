@@ -118,7 +118,7 @@ HTML_PLAYER = """
 
 @app.route('/')
 def index():
-    return "<h3 style='color:white;background:black;text-align:center;padding:20px;'>يرجى استخدام /player?url=رابط_الفيديو</h3>"
+    return "<h3 style='color:white;background:black;text-align:center;padding:20px;'>Mustafa Abbas</h3>"
 
 @app.route('/player')
 def player():
